@@ -139,7 +139,7 @@ class TestVfKwargsEndToEnd:
     def test_genot_missing_required_vf_kwarg_raises(self, adata_perturbation):
         cf = cellflow.model.CellFlow(adata_perturbation, solver="genot")
         _prepare_data(cf)
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError, match="Missing `vf_kwargs` keys"):
             cf.prepare_model(
                 condition_embedding_dim=2,
                 hidden_dims=(2, 2),

@@ -85,9 +85,9 @@ optional-dependencies.external = [
 ]
 optional-dependencies.pp = [
   "pertpy",
-  "statsmodels<0.15",  # pertpy imports multipletests from statsmodels.sandbox, removed in 0.15
   "pynndescent",
   "rdkit",
+  "statsmodels<0.15", # pertpy imports multipletests from statsmodels.sandbox, removed in 0.15
 ]
 optional-dependencies.test = [
   "cellflow-tools[embedding]",

@@ -11,4 +11,5 @@ Metrics
     metrics.compute_r_squared
     metrics.compute_sinkhorn_div
     metrics.compute_e_distance
+    metrics.compute_energy_distance
     metrics.maximum_mean_discrepancy
