@@ -91,3 +91,21 @@ class TestWKNN:
         assert f"{label_key}_transfer_score" in adata_perturbation.obs
         assert adata_perturbation.obs[f"{label_key}_transfer"].dtype.name == "category"
         assert adata_perturbation.obs[f"{label_key}_transfer_score"].dtype.name == "float64"
+
+    def test_transfer_labels_matches_dense(self, adata_perturbation: ad.AnnData):
+        import pandas as pd
+
+        import cellflow
+
+        cellflow.pp.compute_wknn(
+            ref_adata=adata_perturbation,
+            query_adata=adata_perturbation,
+            n_neighbors=50,
+            copy=False,
+        )
+        out = cellflow.pp.transfer_labels(adata_perturbation, adata_perturbation, label_key="cell_type", copy=True)
+
+        onehot = pd.get_dummies(adata_perturbation.obs["cell_type"].astype(str))
+        dense = np.asarray(adata_perturbation.uns["wknn"] @ onehot.values.astype(float))
+        np.testing.assert_allclose(out.obs["cell_type_transfer_score"].values, dense.max(1))
+        assert (out.obs["cell_type_transfer"].astype(str).values == onehot.columns[dense.argmax(1)]).all()
