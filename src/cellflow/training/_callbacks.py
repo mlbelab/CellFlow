@@ -10,6 +10,7 @@ import numpy as np
 from cellflow._types import ArrayLike
 from cellflow.metrics._metrics import (
     compute_e_distance_fast,
+    compute_energy_distance,
     compute_r_squared,
     compute_scalar_mmd,
     compute_sinkhorn_div,
@@ -33,6 +34,7 @@ metric_to_func: dict[str, Callable[[ArrayLike, ArrayLike], float | ArrayLike]] =
     "mmd": compute_scalar_mmd,
     "sinkhorn_div": compute_sinkhorn_div,
     "e_distance": compute_e_distance_fast,
+    "energy_distance": compute_energy_distance,
 }
 
 agg_fn_to_func: dict[str, Callable[[ArrayLike], float | ArrayLike]] = {
@@ -173,7 +175,7 @@ class Metrics(ComputationCallback):
 
     def __init__(
         self,
-        metrics: list[Literal["r_squared", "mmd", "sinkhorn_div", "e_distance"]],
+        metrics: list[Literal["r_squared", "mmd", "sinkhorn_div", "e_distance", "energy_distance"]],
         metric_aggregations: list[Literal["mean", "median"]] = None,
     ):
         self.metrics = metrics
@@ -260,7 +262,7 @@ class PCADecodedMetrics(Metrics):
         ``adata.varm["X_mean"]`` and ``adata.varm["PCs"]``.
     metrics
         List of metrics to compute. Supported metrics are ``"r_squared"``, ``"mmd"``,
-        ``"sinkhorn_div"``, and ``"e_distance"``.
+        ``"sinkhorn_div"``, ``"e_distance"``, and ``"energy_distance"``.
     metric_aggregations
         List of aggregation functions to use for each metric. Supported aggregations are ``"mean"``
         and ``"median"``.
@@ -271,7 +273,7 @@ class PCADecodedMetrics(Metrics):
     def __init__(
         self,
         ref_adata: ad.AnnData,
-        metrics: list[Literal["r_squared", "mmd", "sinkhorn_div", "e_distance"]],
+        metrics: list[Literal["r_squared", "mmd", "sinkhorn_div", "e_distance", "energy_distance"]],
         metric_aggregations: list[Literal["mean", "median"]] = None,
         log_prefix: str = "pca_decoded_",
     ):
@@ -333,7 +335,7 @@ class VAEDecodedMetrics(Metrics):
         An :class:`~anndata.AnnData` object in the same format as the ``vae``.
     metrics
         List of metrics to compute. Supported metrics are ``"r_squared"``, ``"mmd"``,
-        ``"sinkhorn_div"``, and ``"e_distance"``.
+        ``"sinkhorn_div"``, ``"e_distance"``, and ``"energy_distance"``.
     metric_aggregations
         List of aggregation functions to use for each metric. Supported aggregations are ``"mean"``
         and ``"median"``.
@@ -345,7 +347,7 @@ class VAEDecodedMetrics(Metrics):
         self,
         vae: Callable[[ArrayLike], ArrayLike],
         adata: ad.AnnData,
-        metrics: list[Literal["r_squared", "mmd", "sinkhorn_div", "e_distance"]],
+        metrics: list[Literal["r_squared", "mmd", "sinkhorn_div", "e_distance", "energy_distance"]],
         metric_aggregations: list[Literal["mean", "median"]] = None,
         log_prefix: str = "vae_decoded_",
     ):

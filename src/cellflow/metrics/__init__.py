@@ -1,6 +1,7 @@
 from cellflow.metrics._metrics import (
     compute_e_distance,
     compute_e_distance_fast,
+    compute_energy_distance,
     compute_mean_metrics,
     compute_metrics,
     compute_metrics_fast,
@@ -19,5 +20,6 @@ __all__ = [
     "compute_sinkhorn_div",
     "compute_e_distance",
     "compute_e_distance_fast",
+    "compute_energy_distance",
     "maximum_mean_discrepancy",
 ]

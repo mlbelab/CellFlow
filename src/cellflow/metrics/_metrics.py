@@ -18,6 +18,7 @@ __all__ = [
     "compute_sinkhorn_div",
     "compute_e_distance",
     "compute_e_distance_fast",
+    "compute_energy_distance",
     "maximum_mean_discrepancy",
 ]
 
@@ -80,6 +81,12 @@ def compute_e_distance(x: ArrayLike, y: ArrayLike) -> float:
     Returns
     -------
         A scalar denoting the energy distance value.
+
+    Notes
+    -----
+    This uses squared Euclidean distances, for which the within-sample terms cancel the spread in
+    the cross term exactly: the value equals ``2 * ||mean(x) - mean(y)||**2``. It therefore only
+    compares means. Use :func:`compute_energy_distance` to compare full distributions.
     """
     sigma_X = pairwise_squeuclidean(x, x).mean()
     sigma_Y = pairwise_squeuclidean(y, y).mean()
@@ -90,6 +97,31 @@ def compute_e_distance(x: ArrayLike, y: ArrayLike) -> float:
 def pairwise_squeuclidean(x: ArrayLike, y: ArrayLike) -> ArrayLike:
     """Compute pairwise squared euclidean distances."""
     return ((x[:, None, :] - y[None, :, :]) ** 2).sum(-1)
+
+
+@jax.jit
+def compute_energy_distance(x: ArrayLike, y: ArrayLike) -> float:
+    """Compute the energy distance between x and y with Euclidean distances :cite:`szekely:13`.
+
+    Unlike :func:`compute_e_distance` (squared distances, which reduces to a difference of means),
+    this is zero only if the two distributions are identical.
+
+    Parameters
+    ----------
+        x
+            An array of shape [num_samples, num_features].
+        y
+            An array of shape [num_samples, num_features].
+
+    Returns
+    -------
+        A scalar denoting the energy distance value.
+    """
+
+    def dist(a, b):
+        return jnp.sqrt(jnp.maximum(pairwise_squeuclidean(a, b), 0.0))
+
+    return 2 * dist(x, y).mean() - dist(x, x).mean() - dist(y, y).mean()
 
 
 @jax.jit
@@ -128,7 +160,8 @@ def compute_metrics(x: ArrayLike, y: ArrayLike) -> dict[str, float]:
         - the sinkhorn divergence with ``epsilon = 1.0``.
         - the sinkhorn divergence with ``epsilon = 10.0``.
         - the sinkhorn divergence with ``epsilon = 100.0``.
-        - the energy distance value.
+        - the energy distance value (squared distances; equals 2x the squared mean difference).
+        - the energy distance with Euclidean distances (distribution-sensitive).
         - the mean maximum discrepancy loss
     """
     metrics = {}
@@ -137,6 +170,7 @@ def compute_metrics(x: ArrayLike, y: ArrayLike) -> dict[str, float]:
     metrics["sinkhorn_div_10"] = compute_sinkhorn_div(x, y, epsilon=10.0)
     metrics["sinkhorn_div_100"] = compute_sinkhorn_div(x, y, epsilon=100.0)
     metrics["e_distance"] = compute_e_distance_fast(x, y)
+    metrics["energy_distance"] = compute_energy_distance(x, y)
     metrics["mmd"] = compute_scalar_mmd(x, y)
     return metrics
 
@@ -238,11 +272,13 @@ def compute_metrics_fast(x: ArrayLike, y: ArrayLike) -> dict[str, float]:
         A dictionary containing the following computed metrics:
 
         - the r squared score.
-        - the energy distance value.
+        - the energy distance value (squared distances; equals 2x the squared mean difference).
+        - the energy distance with Euclidean distances (distribution-sensitive).
         - the mean maximum discrepancy loss
     """
     metrics = {}
     metrics["r_squared"] = compute_r_squared(x, y)
     metrics["e_distance"] = compute_e_distance_fast(x, y)
+    metrics["energy_distance"] = compute_energy_distance(x, y)
     metrics["mmd"] = compute_scalar_mmd(x, y)
     return metrics
