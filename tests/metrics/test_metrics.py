@@ -15,9 +15,15 @@ class TestMetrics:
         mean_metrics = cellflow.metrics.compute_mean_metrics(metrics, prefix)
 
         assert "Alvespimycin+Pirarubicin" in metrics.keys()
-        assert {"r_squared", "sinkhorn_div_1", "sinkhorn_div_10", "sinkhorn_div_100", "e_distance", "energy_distance", "mmd"} == set(
-            metrics["Alvespimycin+Pirarubicin"].keys()
-        )
+        assert {
+            "r_squared",
+            "sinkhorn_div_1",
+            "sinkhorn_div_10",
+            "sinkhorn_div_100",
+            "e_distance",
+            "energy_distance",
+            "mmd",
+        } == set(metrics["Alvespimycin+Pirarubicin"].keys())
         assert {
             prefix + "r_squared",
             prefix + "sinkhorn_div_1",
