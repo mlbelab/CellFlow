@@ -95,5 +95,5 @@ class TestSolverHooks:
         given = {"genot_source_dims": (2, 2), "genot_source_dropout": 0.1}
         assert GENOTConditionalVelocityField._normalize_vf_kwargs(given) is given
         # ... and rejected when a required key is missing.
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError, match="Missing `vf_kwargs` keys"):
             GENOTConditionalVelocityField._normalize_vf_kwargs({"genot_source_dropout": 0.1})
