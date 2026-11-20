@@ -274,6 +274,7 @@ class CellFlow:
         seed=0,
         condition_dropout_prob: float = 0.0,
         condition_null: Literal["zero_embedding", "mask_value"] = "zero_embedding",
+        x_input_dropout: float = 0.0,
     ) -> None:
         """Prepare the model for training.
 
@@ -416,6 +417,9 @@ class CellFlow:
         condition_null
             How a dropped condition is represented, see
             :attr:`cellflow.networks.ConditionalVelocityField.condition_null`.
+        x_input_dropout
+            Dropout rate on the velocity field's input ``x_t`` before its x encoder (training only).
+            Not supported by the ``'genot'`` velocity field.
 
         Returns
         -------
@@ -435,6 +439,8 @@ class CellFlow:
             if regularization == 0.0:
                 raise ValueError("Stochastic condition embeddings require `regularization`>0.")
 
+        if x_input_dropout > 0.0 and issubclass(self._vf_class, _velocity_field.GENOTConditionalVelocityField):
+            raise NotImplementedError("`x_input_dropout` is not supported by the GENOT velocity field.")
         condition_encoder_kwargs = condition_encoder_kwargs or {}
         # Each velocity field owns which solver-specific `vf_kwargs` it accepts (validated/defaulted here).
         vf_kwargs = self._vf_class._normalize_vf_kwargs(vf_kwargs)
@@ -470,6 +476,7 @@ class CellFlow:
             linear_projection_before_concatenation=linear_projection_before_concatenation,
             condition_dropout_prob=condition_dropout_prob,
             condition_null=condition_null,
+            x_input_dropout=x_input_dropout,
             **vf_kwargs,
         )
 

@@ -384,6 +384,25 @@ class TestCellFlow:
         assert np.all(np.isfinite(p2))
         assert not np.allclose(p1, p2)
 
+    @pytest.mark.parametrize("solver", ["otfm", "genot"])
+    def test_prepare_model_x_input_dropout(self, adata_perturbation, solver):
+        cf = cellflow.model.CellFlow(adata_perturbation, solver=solver)
+        cf.prepare_data(
+            sample_rep="X",
+            control_key="control",
+            perturbation_covariates={"drug": ["drug1"]},
+            perturbation_covariate_reps={"drug": "drug"},
+        )
+        kw = {"condition_embedding_dim": 2, "hidden_dims": (2, 2), "decoder_dims": (2, 2), "x_input_dropout": 0.2}
+        if solver == "genot":
+            with pytest.raises(NotImplementedError, match="x_input_dropout"):
+                cf.prepare_model(vf_kwargs={"genot_source_dims": (2, 2), "genot_source_dropout": 0.0}, **kw)
+            return
+        cf.prepare_model(**kw)
+        assert cf.vf.x_input_dropout == 0.2
+        cf.train(num_iterations=3)
+        assert cf.solver.is_trained
+
     @pytest.mark.slow
     @pytest.mark.parametrize(
         "sample_covariate_and_reps",

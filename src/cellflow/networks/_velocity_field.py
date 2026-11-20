@@ -167,6 +167,8 @@ class ConditionalVelocityField(nn.Module):
         linear_projection_before_concatenation
             If :obj:`True`, applies a linear projection before concatenating
             the embedded time, embedded data.
+        x_input_dropout
+            Dropout rate applied to the input ``x_t`` before the x encoder (training only).
 
     Returns
     -------
@@ -201,6 +203,7 @@ class ConditionalVelocityField(nn.Module):
     decoder_dropout: float = 0.0
     layer_norm_before_concatenation: bool = False
     linear_projection_before_concatenation: bool = False
+    x_input_dropout: float = 0.0
 
     @staticmethod
     def _normalize_vf_kwargs(vf_kwargs: dict[str, Any] | None) -> dict[str, Any]:
@@ -238,6 +241,7 @@ class ConditionalVelocityField(nn.Module):
 
         self._setup_time()
 
+        self.in_dropout = nn.Dropout(rate=self.x_input_dropout)  # no params; rate 0 draws no random number
         self.x_encoder = MLPBlock(
             dims=self.hidden_dims,
             act_fn=self.act_fn,
@@ -334,6 +338,7 @@ class ConditionalVelocityField(nn.Module):
 
     def _encode_x(self, x_t: jnp.ndarray, squeeze: bool, train: bool) -> jnp.ndarray:
         """Encode ``x_t`` before conditioning. Override to insert pre-conditioning processing."""
+        x_t = self.in_dropout(x_t, deterministic=not train)
         return self.x_encoder(x_t, training=train)
 
     def _conditioning_signals(
