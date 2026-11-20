@@ -174,3 +174,26 @@ class TestVelocityField:
         else:
             with pytest.raises(TypeError, match=r".*got an unexpected keyword argument*"):
                 _ = vf.create_train_state(rng=vf_rng, optimizer=opt, input_dim=5, conditions=cond)
+
+    def test_x_input_dropout(self):
+        """``x_input_dropout`` adds no parameters, is inactive at eval time and only changes training outputs."""
+        x = jax.random.normal(jax.random.PRNGKey(0), (10, 5))
+        noise = jnp.zeros((10, 12))
+        rngs = {"condition_encoder": jax.random.PRNGKey(1), "dropout": jax.random.PRNGKey(2)}
+        kw = {"output_dim": 5, "max_combination_length": 2, "condition_embedding_dim": 12, "hidden_dims": (8, 8)}
+        vf0 = _velocity_field.ConditionalVelocityField(**kw)
+        vf1 = _velocity_field.ConditionalVelocityField(x_input_dropout=0.5, **kw)
+        params = vf0.create_train_state(
+            rng=jax.random.PRNGKey(111), optimizer=optax.adam(1e-3), input_dim=5, conditions=cond
+        ).params
+        params1 = vf1.create_train_state(
+            rng=jax.random.PRNGKey(111), optimizer=optax.adam(1e-3), input_dim=5, conditions=cond
+        ).params
+        assert jax.tree_util.tree_all(jax.tree.map(lambda a, b: bool((a == b).all()), params, params1))
+
+        def run(vf, train):
+            return vf.apply({"params": params}, t_test, x, cond, noise, train=train, rngs=rngs)[0]
+
+        assert (run(vf1, False) == run(vf0, False)).all()
+        assert (run(vf0, True) == run(vf0, False)).all()  # no other dropout in this field
+        assert not jnp.allclose(run(vf1, True), run(vf1, False))

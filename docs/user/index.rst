@@ -15,4 +15,5 @@ User API
     training
     plotting
     preprocessing
+    prior
     external

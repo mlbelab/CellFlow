@@ -1,3 +1,4 @@
+import copy
 import functools
 import os
 import types
@@ -23,12 +24,47 @@ from cellflow.data._datamanager import DataManager
 from cellflow.model._utils import _write_predictions
 from cellflow.networks import _velocity_field
 from cellflow.plotting import _utils
+from cellflow.prior import PriorEstimator, PriorValues
+from cellflow.prior._prior import _check_columns
 from cellflow.solvers import SOLVER_REGISTRY, _genot, _otfm
 from cellflow.training._callbacks import BaseCallback
 from cellflow.training._trainer import CellFlowTrainer
 from cellflow.utils import match_linear
 
 __all__ = ["CellFlow"]
+
+
+def _check_one_pair_per_condition(obs: pd.DataFrame, condition_mask: ArrayLike, prior: PriorEstimator) -> None:
+    """Each model condition must belong to one (context, perturbation) pair, else its cells get different priors."""
+    m = np.asarray(condition_mask)
+    t = m >= 0
+    pairs = pd.MultiIndex.from_arrays(
+        [obs[prior.context_key].astype(str).to_numpy()[t], obs[prior.perturbation_key].astype(str).to_numpy()[t]]
+    )
+    if (pd.Series(pd.factorize(pairs)[0]).groupby(m[t]).nunique() > 1).any():
+        raise ValueError(
+            f"Several ({prior.context_key!r}, {prior.perturbation_key!r}) pairs share one model condition, so its "
+            "cells would get different priors. Make the context part of the conditions, e.g. with "
+            f"{prior.context_key!r} in `split_covariates` or `sample_covariates`."
+        )
+
+
+def _shift_by_prior(
+    cell_data: ArrayLike, obs: pd.DataFrame, control_key: str, values: PriorValues, prior: PriorEstimator
+) -> np.ndarray:
+    """Copy of ``cell_data`` with each perturbed cell shifted by ``-prior(context, perturbation)`` (per pair)."""
+    cell = np.array(cell_data)  # copy: never modify the user's adata
+    if not np.issubdtype(cell.dtype, np.floating):
+        cell = cell.astype(np.float32)
+    treated = np.flatnonzero(~obs[control_key].to_numpy(bool))
+    codes, table = values.lookup(obs.iloc[treated], prior.context_key, prior.perturbation_key, cell.shape[1])
+    table = table.astype(cell.dtype)
+    order = np.argsort(codes, kind="stable")
+    cuts = np.cumsum(np.bincount(codes, minlength=len(table)))[:-1]
+    for vec, rows in zip(table, np.split(treated[order], cuts), strict=True):
+        if vec.any():
+            cell[rows] -= vec
+    return cell
 
 
 class CellFlow:
@@ -59,6 +95,13 @@ class CellFlow:
         self._solver: _otfm.OTFlowMatching | _genot.GENOT | None = None
         self._condition_dim: int | None = None
         self._vf: _velocity_field.ConditionalVelocityField | _velocity_field.GENOTConditionalVelocityField | None = None
+        self.prior: PriorEstimator | None = None
+        self.prior_train: PriorValues | None = None
+        self.prior_predict: PriorValues | None = None
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        # models pickled before priors existed
+        self.__dict__.update({"prior": None, "prior_train": None, "prior_predict": None} | state)
 
     def prepare_data(
         self,
@@ -71,6 +114,7 @@ class CellFlow:
         split_covariates: Sequence[str] | None = None,
         max_combination_length: int | None = None,
         null_value: float = 0.0,
+        prior: PriorEstimator | None = None,
     ) -> None:
         """Prepare the dataloader for training from :attr:`~cellflow.model.CellFlow.adata`.
 
@@ -120,6 +164,15 @@ class CellFlow:
             as the maximal number of perturbations a cell has been treated with.
         null_value
             Value to use for padding to ``'max_combination_length'``.
+        prior
+            Optional prior estimator (residual flow), e.g. :class:`cellflow.prior.TransferPrior` or
+            :class:`cellflow.prior.FixedPrior`. It is fitted on :attr:`adata` and gives a prior mean shift per
+            (context, perturbation) in ``sample_rep``; the perturbed cells' training targets are shifted by
+            ``-prior`` (controls never, pairs without a prior not at all), so the flow learns the correction to
+            the prior. :meth:`predict` computes the priors of the predicted conditions and adds them back, and
+            :meth:`prepare_validation_data` shifts the validation targets the same way. The estimator is copied
+            before fitting (the passed object is not modified). Each model condition must belong to a single
+            (context, perturbation) pair, e.g. with ``context_key`` among the ``split_covariates``.
 
         Returns
         -------
@@ -127,6 +180,9 @@ class CellFlow:
 
         - :attr:`cellflow.model.CellFlow.data_manager` - the :class:`cellflow.data.DataManager` object.
         - :attr:`cellflow.model.CellFlow.train_data` - the training data.
+        - :attr:`cellflow.model.CellFlow.prior` - the fitted prior estimator (or :obj:`None`).
+        - :attr:`cellflow.model.CellFlow.prior_train` - the :class:`cellflow.prior.PriorValues` of the
+          training pairs (or :obj:`None`).
 
         Example
         -------
@@ -169,7 +225,31 @@ class CellFlow:
                     sample_covariate_reps=sample_covariate_reps,
                     split_covariates=split_covariates,
                 )
+
+            Residual flow on a transfer prior computed in gene space (``adata.X``) for a model in PCA space:
+
+            .. code-block:: python
+
+                prior = cellflow.prior.TransferPrior(
+                    context_key="context",
+                    perturbation_key="perturbation",
+                    weighting=cellflow.prior.BaselineSimilarity(tau=0.2, n0=1000),
+                    batch_key="batch",
+                    group_key="tissue",
+                    projection="PCs",  # adata.varm["PCs"]: genes -> X_pca
+                )
+                cf.prepare_data(
+                    sample_rep="X_pca", control_key="is_control", ..., split_covariates=["context", "batch"], prior=prior
+                )
         """
+        if prior is not None:
+            if not isinstance(prior, PriorEstimator):
+                raise TypeError(
+                    f"`prior` must be a prior estimator (e.g. `cellflow.prior.TransferPrior`), got {type(prior).__name__}."
+                )
+            if not isinstance(sample_rep, str):
+                raise ValueError("`prior` needs `sample_rep` to be a key in `adata.obsm` or 'X'.")
+            _check_columns(self.adata.obs, [control_key, prior.context_key, prior.perturbation_key], "`adata.obs`")
         self._dm = DataManager(
             self.adata,
             sample_rep=sample_rep,
@@ -184,6 +264,15 @@ class CellFlow:
         )
 
         self.train_data = self._dm.get_train_data(self.adata)
+        self.prior, self.prior_train, self.prior_predict = None, None, None
+        if prior is not None:
+            prior = copy.deepcopy(prior)  # fitted state belongs to this model
+            _check_one_pair_per_condition(self.adata.obs, self.train_data.perturbation_covariates_mask, prior)
+            self.prior_train = prior.fit(self.adata, control_key, sample_rep)
+            self.train_data.cell_data = _shift_by_prior(
+                self.train_data.cell_data, self.adata.obs, control_key, self.prior_train, prior
+            )
+            self.prior = prior
         self._data_dim = self.train_data.cell_data.shape[-1]  # type: ignore[union-attr]
 
     def prepare_validation_data(
@@ -220,6 +309,9 @@ class CellFlow:
 
         - :attr:`cellflow.model.CellFlow.validation_data` - a dictionary with the validation data.
 
+        For a model with a ``prior`` (see :meth:`prepare_data`), the perturbed validation targets are shifted by
+        their priors (computed with the prior's ``predict``, so contexts not seen in training use only their
+        control cells), i.e. validation metrics are computed on the residual flow.
         """
         if self.train_data is None:
             raise ValueError(
@@ -230,6 +322,14 @@ class CellFlow:
             n_conditions_on_log_iteration=n_conditions_on_log_iteration,
             n_conditions_on_train_end=n_conditions_on_train_end,
         )
+        prior = getattr(self, "prior", None)
+        if prior is not None:  # residual flow: validation targets are shifted like the training targets
+            control_key = self._dm.control_key
+            obs = adata.obs[~adata.obs[control_key].to_numpy(bool)]
+            cols = [prior.context_key, prior.perturbation_key, getattr(prior, "batch_key", None)]
+            conditions = obs[[c for c in cols if c is not None and c in obs.columns]].drop_duplicates()
+            pv = prior.predict(adata, conditions, control_key, self._dm.sample_rep)
+            val_data.cell_data = _shift_by_prior(val_data.cell_data, adata.obs, control_key, pv, prior)
         self._validation_data[name] = val_data
         predict_kwargs = predict_kwargs or {}
         if (
@@ -272,6 +372,9 @@ class CellFlow:
         layer_norm_before_concatenation: bool = False,
         linear_projection_before_concatenation: bool = False,
         seed=0,
+        condition_dropout_prob: float = 0.0,
+        condition_null: Literal["zero_embedding", "mask_value"] = "zero_embedding",
+        x_input_dropout: float = 0.0,
     ) -> None:
         """Prepare the model for training.
 
@@ -408,6 +511,15 @@ class CellFlow:
             the embedded time, embedded data, and embedded condition.
         seed
             Random seed.
+        condition_dropout_prob
+            Probability of dropping the condition of a training sample (classifier-free guidance training).
+            With a value > 0, :meth:`predict` accepts ``guidance_scale`` (passed on to the solver).
+        condition_null
+            How a dropped condition is represented, see
+            :attr:`cellflow.networks.ConditionalVelocityField.condition_null`.
+        x_input_dropout
+            Dropout rate on the velocity field's input ``x_t`` before its x encoder (training only).
+            Not supported by the ``'genot'`` velocity field.
 
         Returns
         -------
@@ -427,6 +539,8 @@ class CellFlow:
             if regularization == 0.0:
                 raise ValueError("Stochastic condition embeddings require `regularization`>0.")
 
+        if x_input_dropout > 0.0 and issubclass(self._vf_class, _velocity_field.GENOTConditionalVelocityField):
+            raise NotImplementedError("`x_input_dropout` is not supported by the GENOT velocity field.")
         condition_encoder_kwargs = condition_encoder_kwargs or {}
         # Each velocity field owns which solver-specific `vf_kwargs` it accepts (validated/defaulted here).
         vf_kwargs = self._vf_class._normalize_vf_kwargs(vf_kwargs)
@@ -460,6 +574,9 @@ class CellFlow:
             decoder_dropout=decoder_dropout,
             layer_norm_before_concatenation=layer_norm_before_concatenation,
             linear_projection_before_concatenation=linear_projection_before_concatenation,
+            condition_dropout_prob=condition_dropout_prob,
+            condition_null=condition_null,
+            x_input_dropout=x_input_dropout,
             **vf_kwargs,
         )
 
@@ -595,12 +712,26 @@ class CellFlow:
         If ``'key_added_prefix'`` is :obj:`None`, a :class:`dict` with the predicted sample
         representation for each perturbation, otherwise stores the predictions in
         :attr:`~anndata.AnnData.obsm` and returns :obj:`None`.
+
+        If the model was prepared with a ``prior`` (see :meth:`prepare_data`), the prior of each condition is
+        added to its generated cells. Contexts not seen in training are weighted from the control cells in
+        ``adata`` only. This requires ``condition_id_key``, and ``covariate_data`` and ``adata.obs`` must carry
+        the prior's columns. The priors used in the last call are stored in
+        :attr:`cellflow.model.CellFlow.prior_predict` (and saved with the model).
         """
         if self.solver is None or not self.solver.is_trained:
             raise ValueError("Model not trained. Please call `train` first.")
 
         if sample_rep is None:
             sample_rep = self._dm.sample_rep
+        prior = getattr(self, "prior", None)
+        if prior is not None:
+            if condition_id_key is None:
+                raise ValueError("A model with a `prior` needs `condition_id_key` in `predict`.")
+            _check_columns(
+                covariate_data, [condition_id_key, prior.context_key, prior.perturbation_key], "`covariate_data`"
+            )
+            _check_columns(adata.obs, [prior.context_key], "`adata.obs`")
 
         if adata is not None and covariate_data is not None:
             if covariate_data.empty:
@@ -630,6 +761,12 @@ class CellFlow:
             src,
             condition,  # type: ignore[attr-defined]
         )
+        if prior is not None:
+            self.prior_predict = prior.predict(adata, covariate_data, self._dm.control_key, sample_rep)
+            rows = covariate_data.drop_duplicates(condition_id_key)
+            codes, table = self.prior_predict.lookup(rows, prior.context_key, prior.perturbation_key, self._data_dim)
+            pr = dict(zip(rows[condition_id_key], table[codes], strict=True))
+            out = {k: v + jnp.asarray(pr[k], dtype=v.dtype) for k, v in out.items()}
         if key_added_prefix is None:
             return out
         if len(pred_data.control_to_perturbation) > 1:

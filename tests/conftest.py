@@ -289,3 +289,43 @@ def metrics_data():
         "Dacinostat+Danusertib": np.random.rand(20, 10),
     }
     return data
+
+
+def _make_adata_prior() -> ad.AnnData:
+    """Contexts in two tissues with per-(context, batch) controls and treated cells; A|x spans two batches."""
+    rng = np.random.default_rng(0)
+    n_genes = 12
+    layout = {  # context -> {batch: drugs}
+        "A|x": {"b1": ["d0", "d1"], "b2": ["d2"]},
+        "A|y": {"bA": ["d0", "d1", "d2"]},
+        "A|z": {"bA": ["d0", "d2"]},
+        "B|u": {"bB": ["d0", "d1", "d2"]},
+        "B|v": {"bB": ["d1", "d2"]},
+    }
+    eff = {d: rng.normal(size=n_genes) for d in ["d0", "d1", "d2"]}
+    rows, X = [], []
+    for c, batches in layout.items():
+        base = rng.normal(size=n_genes) + (3.0 if c.startswith("A") else -3.0) * np.linspace(0, 1, n_genes)
+        for b, drugs in batches.items():
+            for d in ["control"] + drugs:
+                n = 25 if d == "control" else (10 if (c, d) == ("B|v", "d2") else 32)
+                X.append(base + (0 if d == "control" else eff[d]) + rng.normal(scale=0.5, size=(n, n_genes)))
+                rows += [{"context": c, "tissue": c[0], "batch": b, "perturbation": d}] * n
+    obs = pd.DataFrame(rows)
+    obs.index = obs.index.astype(str)
+    obs["is_control"] = obs["perturbation"] == "control"
+    for k in ["context", "tissue", "batch", "perturbation"]:
+        obs[k] = obs[k].astype("category")
+    X = np.vstack(X).astype(np.float32)
+    adata = ad.AnnData(X=X, obs=obs)
+    mean = X.mean(0)
+    pcs = np.linalg.svd(X - mean, full_matrices=False)[2][:5].T
+    adata.varm["PCs"] = pcs
+    adata.obsm["X_pca"] = ((X - mean) @ pcs).astype(np.float32)
+    adata.uns["drug_emb"] = {d: rng.normal(size=4).astype(np.float32) for d in obs["perturbation"].cat.categories}
+    return adata
+
+
+@pytest.fixture()
+def adata_prior() -> ad.AnnData:
+    return _make_adata_prior()
